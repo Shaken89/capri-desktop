@@ -33,9 +33,12 @@ namespace CapriDesktop
                 try
                 {
                     string data = smoke ? Path.GetFullPath(args[1]) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Capri");
+                    AssetCatalog.Validate(Assembly.GetExecutingAssembly());
+                    if (args.Length == 1 && args[0] == "--verify-assets") return 0;
                     using (Companion app = new Companion(data, restore, smoke))
                     {
                         if (smoke) app.StartSmokeTest(data);
+                        if (args.Length == 1 && args[0] == "--diagnostics") app.Shown += delegate { app.ShowDiagnostics(); };
                         Application.Run(app);
                         return app.TestFailed ? 1 : 0;
                     }
@@ -48,33 +51,6 @@ namespace CapriDesktop
                 }
             }
         }
-    }
-
-    [DataContract]
-    internal sealed class Preferences
-    {
-        [DataMember] public int X { get; set; }
-        [DataMember] public int Y { get; set; }
-        [DataMember] public bool HasPosition { get; set; }
-        [DataMember] public int Size = 240;
-        [DataMember] public bool Motion = true;
-        [DataMember] public bool CursorReactions { get; set; }
-        [DataMember] public bool SmoothMotion { get; set; }
-        [DataMember] public bool Autonomous { get; set; }
-        [DataMember] public bool PauseFullscreen { get; set; }
-        [DataMember] public bool EcoMode { get; set; }
-        [DataMember] public int MovementSpeed { get; set; }
-        [DataMember] public int GravityScale { get; set; }
-        [DataMember] public bool OnTop = true;
-        [DataMember] public long UpdateCheckedAt { get; set; }
-        [DataMember] public string Model { get; set; }
-        [DataMember] public bool Welcomed { get; set; }
-        [DataMember] public bool NoSitting { get; set; }
-        [DataMember] public string VoiceKey { get; set; }
-        [DataMember] public string VoiceId { get; set; }
-        [DataMember] public string VoiceModel { get; set; }
-        [DataMember] public string AgentId { get; set; }
-        [DataMember] public int AgentVersion { get; set; }
     }
 
     [DataContract]
@@ -201,6 +177,9 @@ namespace CapriDesktop
         private double pillUntil = 10;
         private int asking;
         private ChatWindow textChat;
+        private DiagnosticsWindow diagnostics;
+        private long renderedFrames;
+        private bool quitting;
         private bool textChatActive, manualRest;
         private bool finding;
         internal Func<string, string> Think;
@@ -312,6 +291,7 @@ namespace CapriDesktop
             clickDelay.Tick += delegate { OnClickDelay(); };
             menu.Items.Add(new ToolStripMenuItem("Bring to this screen", null, delegate { RestoreAtCursor(); }));
             menu.Items.Add(new ToolStripMenuItem("Open chat", null, delegate { OpenTextChat(); }));
+            menu.Items.Add(new ToolStripMenuItem("Diagnostics", null, delegate { ShowDiagnostics(); }));
             menu.Items.Add(new ToolStripMenuItem("Open Capri Mainframe", null, delegate { mainframe.Restore(); }));
             updateItem = new ToolStripMenuItem("Check for updates", null, delegate { if (updatePage != null) OpenPage(updatePage); else CheckForUpdates(true); });
             menu.Items.Add(updateItem);
@@ -343,21 +323,24 @@ namespace CapriDesktop
             typer.VisibleChanged += delegate { if (!typer.Visible && replyDone >= 0) replyDone = clock.Elapsed.TotalSeconds; };
             frames = new System.Windows.Forms.Timer();
             frames.Interval = preferences.SmoothMotion ? 16 : 33;
-            frames.Tick += delegate { if (fullscreenPaused) return; StepExploration(clock.Elapsed.TotalSeconds); if (riding) FollowCursor(); else if (falling) Tumble(clock.Elapsed.TotalSeconds); else if (seat != null) HoldSeat(clock.Elapsed.TotalSeconds); RenderFrame(); if (!riding && !dragging && !preferences.Motion && clip == idle && speech == null && talkState == TalkState.Off) frames.Stop(); };
+            frames.Tick += delegate { if (fullscreenPaused || hidden || quitting) { frames.Stop(); return; } StepExploration(clock.Elapsed.TotalSeconds); if (riding) FollowCursor(); else if (falling) Tumble(clock.Elapsed.TotalSeconds); else if (seat != null) HoldSeat(clock.Elapsed.TotalSeconds); RenderFrame(); if (!riding && !dragging && !falling && seat == null && !preferences.Motion && clip == idle && speech == null && talkState == TalkState.Off) frames.Stop(); };
             signals = new System.Windows.Forms.Timer();
             signals.Interval = 250;
             signals.Tick += delegate
             {
-                CheckFullscreen();
-                frames.Interval = preferences.EcoMode ? 67 : preferences.SmoothMotion ? 16 : 33;
-                if (fullscreenPaused) return;
+                if (quitting) return;
                 if (restore.WaitOne(0)) { RestoreAtCursor(); mainframe.Restore(); }
+                CheckFullscreen();
+                signals.Interval = hidden || fullscreenPaused ? 1000 : preferences.EcoMode ? 500 : 250;
+                int frameInterval = preferences.EcoMode ? 67 : preferences.SmoothMotion ? 16 : 33;
+                if (frames.Interval != frameInterval) frames.Interval = frameInterval;
+                if (hidden || fullscreenPaused) return;
                 if (!testing) CheckIdle(Native.IdleMilliseconds());
                 StayOnTop();
                 CheckSeat(clock.Elapsed.TotalSeconds);
                 CheckChat(clock.Elapsed.TotalSeconds);
                 UpdatePill(clock.Elapsed.TotalSeconds);
-                if (!testing && clock.Elapsed.TotalSeconds > 20 && UpdateDue(preferences.UpdateCheckedAt, DateTime.UtcNow.Ticks)) CheckForUpdates(false);
+                // Development builds do not automatically offer upstream release executables.
             };
             signals.Start();
             Size = CanvasSize(preferences.Size);
@@ -398,8 +381,8 @@ namespace CapriDesktop
                 SavePreferences();
             }
             // Text chat uses the built-in dialogue provider; no model discovery on startup.
-            if (!testing && voice.Key != null) ListVoices(voice.Key, false);
-            RefreshIcons();
+            // Voice providers remain explicitly user-initiated in the development build.
+            if (!preferences.NoSitting) RefreshIcons();
         }
 
         internal static Bitmap LoadArt(string name)
@@ -564,13 +547,21 @@ namespace CapriDesktop
         private Point KeepOnScreen(Point point)
         {
             Rectangle area = Screen.FromPoint(new Point(point.X + Width / 2, point.Y + Height / 2)).WorkingArea;
-            return new Point(Math.Max(area.Left, Math.Min(point.X, area.Right - Width)), Math.Max(area.Top, Math.Min(point.Y, area.Bottom - Height)));
+            return RuntimePolicy.Clamp(point, Size, area);
         }
 
         private void DisplaysChanged(object sender, EventArgs e)
         {
-            if (IsDisposed || !IsHandleCreated) return;
-            try { BeginInvoke((Action)delegate { if (IsDisposed) return; behavior.Stop(clock.Elapsed.TotalSeconds); if (seat != null) StandUp(); anchor = KeepOnScreen(anchor); Location = anchor; RenderFrame(); }); } catch (InvalidOperationException) { }
+            Post(delegate
+            {
+                behavior.Stop(clock.Elapsed.TotalSeconds);
+                jumpSurfaces = null; fallTo = null; falling = false; fallSpeed = fallRemainder = 0;
+                if (riding) StopRide();
+                if (seat != null) StandUp();
+                anchor = KeepOnScreen(anchor); Location = anchor;
+                if (textChat != null && !textChat.IsDisposed) textChat.KeepVisibleOnDesktop();
+                RenderFrame();
+            });
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -637,6 +628,7 @@ namespace CapriDesktop
 
         private bool Solid(Point point)
         {
+            if (frame == null) return false;
             for (int dx = -4; dx <= 4; dx += 4)
                 for (int dy = -4; dy <= 4; dy += 4)
                 {
@@ -796,7 +788,7 @@ namespace CapriDesktop
         private System.Collections.Generic.List<IntPtr> Skip()
         {
             System.Collections.Generic.List<IntPtr> skip = new System.Collections.Generic.List<IntPtr>();
-            foreach (Form own in new Form[] { this, pill, box, typer, mainframe }) if (own.IsHandleCreated) skip.Add(own.Handle);
+            foreach (Form own in new Form[] { this, pill, box, typer, mainframe, textChat, diagnostics }) if (own != null && !own.IsDisposed && own.IsHandleCreated) skip.Add(own.Handle);
             return skip;
         }
 
@@ -870,6 +862,7 @@ namespace CapriDesktop
                     double fraction = jumpY == beforeY ? 1 : (surface.Y - beforeY) / (jumpY - beforeY);
                     double crossingX = beforeX + (jumpX - beforeX) * fraction;
                     if (crossingX < surface.Left + 8 || crossingX > surface.Right - 8) continue;
+                    if (!surface.Floor && Ledges.Covered(surface, (int)crossingX, Skip())) continue;
                     if (landing == null || surface.Y < landing.Y) landing = surface;
                 }
             }
@@ -891,6 +884,7 @@ namespace CapriDesktop
                 Rectangle bounds;
                 if (!Ledges.Showing(ledge.Window, out bounds) || !Ledges.Seatable(ledge.Window, bounds)) return;
                 if (bounds != ledge.Bounds) { ledge.Left = bounds.Left; ledge.Right = bounds.Right; ledge.Y = bounds.Top; ledge.Bounds = bounds; }
+                if (Hip().X < ledge.Left || Hip().X > ledge.Right || Ledges.Covered(ledge, Hip().X, Skip())) return;
             }
             falling = false;
             coveredSince = -1;
@@ -916,6 +910,9 @@ namespace CapriDesktop
             }
             seatLost = -1;
             if (bounds == seat.Bounds) return;
+            Rectangle screen = Screen.FromRectangle(bounds).Bounds;
+            if (!screen.Contains(new Rectangle(Seated(Hip().X, bounds.Top), Size)))
+            { StandUp(); anchor = KeepOnScreen(anchor); return; }
             int dx = bounds.Width == seat.Bounds.Width ? bounds.Left - seat.Bounds.Left : 0;
             int x = Math.Max(bounds.Left + 8, Math.Min(Hip().X + dx, bounds.Right - 8));
             seat.Bounds = bounds;
@@ -958,7 +955,7 @@ namespace CapriDesktop
         {
             preferences.NoSitting = !preferences.NoSitting;
             sitItem.Checked = !preferences.NoSitting;
-            if (preferences.NoSitting && (seat != null || falling)) { seat = null; falling = false; Play(idle); UpdateAnimation(); }
+            if (preferences.NoSitting && (seat != null || falling)) { seat = null; falling = false; jumpSurfaces = null; fallTo = null; Play(idle); UpdateAnimation(); }
             SavePreferences();
         }
 
@@ -974,13 +971,14 @@ namespace CapriDesktop
         {
             hidden = value;
             visibilityItem.Text = value ? "Show Capri" : "Hide Capri";
-            if (value) { StopRide(); seat = null; falling = false; pendingClick = false; clickDelay.Stop(); frames.Stop(); Hide(); pill.Hide(); typer.Hide(); CloseTalk(); StopChat(); }
-            else { anchor = KeepOnScreen(anchor); Location = anchor; Play(grin); Show(); RenderFrame(); UpdateAnimation(); }
+            if (value) { StopRide(); seat = null; falling = false; jumpSurfaces = null; fallTo = null; pendingClick = false; clickDelay.Stop(); frames.Stop(); Hide(); pill.Hide(); typer.Hide(); CloseTalk(); StopChat(); }
+            else if (!fullscreenPaused) { anchor = KeepOnScreen(anchor); Location = anchor; Play(manualRest ? sleep : grin); Show(); RenderFrame(); UpdateAnimation(); }
             mainframe.Sync();
         }
 
         private void RestoreAtCursor()
         {
+            jumpSurfaces = null; fallTo = null;
             StopRide();
             seat = null;
             falling = false;
@@ -1038,7 +1036,12 @@ namespace CapriDesktop
 
         private void Post(Action action)
         {
-            try { if (!IsDisposed) BeginInvoke(action); } catch (InvalidOperationException) { }
+            try
+            {
+                if (!quitting && !IsDisposed && IsHandleCreated)
+                    BeginInvoke((Action)delegate { if (!quitting && !IsDisposed) action(); });
+            }
+            catch (InvalidOperationException) { }
         }
 
         private void UseBrain(string[] installed, Machine found, Pick local)
@@ -1257,17 +1260,29 @@ namespace CapriDesktop
             }
         }
 
+        internal void ShowDiagnostics()
+        {
+            if (quitting) return;
+            if (diagnostics == null || diagnostics.IsDisposed)
+                diagnostics = new DiagnosticsWindow(delegate { return renderedFrames; }, delegate
+                { return "Animation: " + clip.State + " | " + (hidden ? "hidden" : fullscreenPaused ? "fullscreen paused" : falling ? "airborne" : "active"); });
+            diagnostics.Show(); diagnostics.Activate();
+        }
+
         private void OpenTextChat()
         {
-            if (textChat != null && !textChat.IsDisposed) { textChat.Show(); textChat.Activate(); return; }
+            if (quitting) return;
+            if (textChat != null && !textChat.IsDisposed) { textChat.RestoreChat(); return; }
             textChat = new ChatWindow(Path.GetDirectoryName(settingsPath), delegate(Services.ChatActivity state, string text)
             {
-                if (IsDisposed) return;
+                if (IsDisposed || quitting) return;
                 textChatActive = state == Services.ChatActivity.Thinking || state == Services.ChatActivity.Talking;
                 behavior.Stop(clock.Elapsed.TotalSeconds);
+                if (!RuntimePolicy.SocialAnimationAllowed(manualRest, dragging, riding, falling, hidden || fullscreenPaused))
+                { if (state == Services.ChatActivity.Idle) speech = null; return; }
                 AnimationState animation = Services.ChatAnimation.For(state);
-                if (!manualRest && animation == AnimationState.Grin) Play(grin);
-                else if (!manualRest && animation == AnimationState.Glitch) Play(glitch);
+                if (!manualRest && animation == AnimationState.Grin) Play(seat != null ? perchGlitch : grin);
+                else if (!manualRest && animation == AnimationState.Glitch) Play(seat != null ? perchGlitch : glitch);
                 else if (state == Services.ChatActivity.Thinking && !manualRest) Play(idle);
                 if (state == Services.ChatActivity.Talking && !manualRest) Say(text != null && text.Length > 20 ? text.Substring(text.Length - 20) : text);
                 if (state == Services.ChatActivity.Idle) { speech = null; UpdateAnimation(); }
@@ -1649,6 +1664,7 @@ namespace CapriDesktop
 
         private void UpdateAnimation()
         {
+            if (quitting) return;
             if (!preferences.Motion && !manualRest && !riding && seat == null && !falling && clip != glitch && clip != dangle && clip != wake) Play(idle);
             if ((preferences.Motion || manualRest || riding || seat != null || falling || clip != idle || speech != null || talkState != TalkState.Off) && !hidden && !fullscreenPaused) frames.Start(); else frames.Stop();
             RenderFrame();
@@ -1656,7 +1672,7 @@ namespace CapriDesktop
 
         private void RenderFrame()
         {
-            if (!IsHandleCreated || hidden || fullscreenPaused || IsDisposed) return;
+            if (!IsHandleCreated || hidden || fullscreenPaused || IsDisposed || quitting) return;
             double now = clock.Elapsed.TotalSeconds;
             int cell = Advance(now);
             Clip shown = clip;
@@ -1678,6 +1694,7 @@ namespace CapriDesktop
             }
             using (Graphics graphics = Graphics.FromImage(frame)) { graphics.Clear(Color.Transparent); Draw(graphics, shown, cell, talk); }
             Native.DrawLayered(Handle, frame, anchor);
+            renderedFrames++;
             UpdateTalk(now);
             if (pill.Visible) UpdatePill(now);
         }
@@ -1741,8 +1758,10 @@ namespace CapriDesktop
             {
                 using (FileStream stream = File.OpenRead(settingsPath))
                 {
+                    if (stream.Length > 65536) return new Preferences();
                     Preferences value = (Preferences)new DataContractJsonSerializer(typeof(Preferences)).ReadObject(stream);
-                    if (value.Size != 170 && value.Size != 240 && value.Size != 320) value.Size = 240;
+                    if (value == null) return new Preferences();
+                    value.Normalize();
                     return value;
                 }
             }
@@ -1767,8 +1786,10 @@ namespace CapriDesktop
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            quitting = true;
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplaysChanged;
-            if (textChat != null && !textChat.IsDisposed) textChat.Close();
+            if (textChat != null && !textChat.IsDisposed) textChat.Shutdown();
+            if (diagnostics != null) diagnostics.Dispose();
             StopRide();
             clickDelay.Stop();
             frames.Stop();
@@ -1790,7 +1811,10 @@ namespace CapriDesktop
         {
             if (disposing)
             {
+                quitting = true;
+                Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplaysChanged;
                 if (textChat != null) textChat.Dispose();
+                if (diagnostics != null) diagnostics.Dispose();
                 clickDelay.Dispose();
                 frames.Dispose();
                 signals.Dispose();

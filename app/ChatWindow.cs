@@ -26,6 +26,7 @@ namespace CapriDesktop
         private readonly Button send = new Button { Text = "Send", Dock = DockStyle.Right, Width = 65 };
         private CancellationTokenSource operation;
         private bool shuttingDown, loading, fadingOut;
+        private Font chatFont;
         private readonly System.Windows.Forms.Timer transition = new System.Windows.Forms.Timer { Interval = 16 };
         private double targetOpacity;
         private int scrollTarget;
@@ -38,13 +39,14 @@ namespace CapriDesktop
             catch (Exception error) { config = new ChatConfiguration(); warning = "Could not load chat data: " + error.Message; }
             Text = "CAPRI / DESKTOP CHAT"; Size = new Size(540, 640); MinimumSize = new Size(440, 480);
             BackColor = Color.FromArgb(18, 21, 30); ForeColor = Color.Gainsboro; StartPosition = FormStartPosition.Manual;
+            AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
             AddButton("Settings", delegate { Settings(); });
             AddButton("Stop", delegate { if (operation != null) operation.Cancel(); });
             tools.Controls.Add(sessions);
-            AddButton("New", delegate { if (operation == null) NewSession(); });
+            AddButton("New", delegate { if (operation == null && !fadingOut) NewSession(); });
             AddButton("Clear", delegate
             {
-                if (operation != null) return;
+                if (operation != null || fadingOut || shuttingDown) return;
                 try { if (!privateMode.Checked) storage.DeleteSession(session.Id); session.Messages.Clear(); DrawHistory(); Save(); }
                 catch (Exception error) { status.Text = "Could not clear saved history: " + error.Message; }
             });
@@ -64,6 +66,7 @@ namespace CapriDesktop
                 status.Text = privateMode.Checked ? "Private: this session is never saved." : "Persistence: " + (config.PersistHistory ? "enabled locally" : "off");
             };
             if (archive.Count > 0) { session = archive[archive.Count - 1]; RefreshSessions(); DrawHistory(); } else NewSession();
+            messages.ClientSizeChanged += delegate { ResizeBubbles(); };
             ApplyAppearance();
             if (warning != null) status.Text = warning;
             FormClosing += delegate(object sender, FormClosingEventArgs e)
@@ -81,7 +84,7 @@ namespace CapriDesktop
                 int delta = desired - current;
                 if (Math.Abs(delta) > 3) messages.AutoScrollPosition = new Point(0, current + Math.Sign(delta) * Math.Max(1, Math.Abs(delta) / 3));
                 else messages.AutoScrollPosition = new Point(0, desired);
-                if (Math.Abs(targetOpacity - Opacity) < .001 && Math.Abs(delta) <= 3)
+                if (Math.Abs(targetOpacity - Opacity) < .001 && (fadingOut || Math.Abs(delta) <= 3))
                 {
                     transition.Stop();
                     if (fadingOut) { shuttingDown = true; activity(ChatActivity.Idle, null); Close(); }
@@ -91,11 +94,38 @@ namespace CapriDesktop
         }
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { shuttingDown = true; if (operation != null) operation.Cancel(); transition.Dispose(); }
+            if (disposing) { shuttingDown = true; if (operation != null) operation.Cancel(); transition.Dispose(); if (chatFont != null) { chatFont.Dispose(); chatFont = null; } }
             base.Dispose(disposing);
         }
         private void AddButton(string name, EventHandler handler) { var button = new Button { Text = name, AutoSize = true, FlatStyle = FlatStyle.Flat }; button.Click += handler; tools.Controls.Add(button); }
-        private void ApplyAppearance() { targetOpacity = config.Opacity; Opacity = config.Opacity; var old = Font; Font = new Font("Segoe UI", config.FontSize); if (old != null && old != Control.DefaultFont) old.Dispose(); }
+        private void ApplyAppearance()
+        {
+            targetOpacity = config.Opacity; Opacity = config.Opacity;
+            Font old = chatFont; chatFont = new Font("Segoe UI", config.FontSize); Font = chatFont;
+            if (old != null) old.Dispose();
+        }
+        internal void RestoreChat()
+        {
+            if (shuttingDown || IsDisposed) return;
+            fadingOut = false; targetOpacity = config.Opacity;
+            Busy(operation != null); transition.Start(); Show(); Activate();
+        }
+        internal void Shutdown()
+        {
+            shuttingDown = true; transition.Stop();
+            if (operation != null) operation.Cancel();
+            Close();
+        }
+        internal void KeepVisibleOnDesktop()
+        {
+            if (IsDisposed) return;
+            Rectangle area = Screen.FromRectangle(Bounds).WorkingArea;
+            Location = RuntimePolicy.Clamp(Location, Size, area);
+        }
+        private void ResizeBubbles()
+        {
+            foreach (Control bubble in messages.Controls) bubble.Width = Math.Max(180, messages.ClientSize.Width - 30);
+        }
         private void Busy(bool busy)
         {
             send.Enabled = !busy; input.ReadOnly = busy; sessions.Enabled = !busy && !privateMode.Checked; privateMode.Enabled = !busy;
@@ -116,6 +146,7 @@ namespace CapriDesktop
             while (messages.Controls.Count > 0) { var item = messages.Controls[0]; messages.Controls.RemoveAt(0); item.Dispose(); }
             foreach (var message in session.Messages) Bubble(message.Role, message.Content);
             messages.ResumeLayout();
+            ScrollToEnd();
         }
         private void ScrollToEnd()
         {
@@ -164,18 +195,19 @@ namespace CapriDesktop
             {
                 if (!shuttingDown) { status.Text = current.IsCancellationRequested ? "Typing stopped. Partial output was not saved." : "Request failed: " + FriendlyError(error); activity(ChatActivity.Error, null); }
                 if (session.Messages.Count > 0 && session.Messages[session.Messages.Count - 1].Role == "user") session.Messages.RemoveAt(session.Messages.Count - 1);
+                if (!shuttingDown && !fadingOut) DrawHistory();
             }
             finally { operation = null; current.Dispose(); if (!shuttingDown && !fadingOut) { Busy(false); activity(ChatActivity.Idle, null); input.Focus(); } }
         }
         private static string FriendlyError(Exception error) { return error is ArgumentException ? error.Message : "The dialogue could not finish. Try again."; }
         private void DeleteHistory()
         {
-            if (operation != null || MessageBox.Show(this, "Delete all locally saved conversations?", "Capri", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            if (operation != null || fadingOut || shuttingDown || MessageBox.Show(this, "Delete all locally saved conversations?", "Capri", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
             try { storage.DeleteAll(); archive.Clear(); NewSession(); status.Text = "History deleted."; } catch (Exception error) { status.Text = "Could not delete history: " + error.Message; }
         }
         private void Settings()
         {
-            if (operation != null) return;
+            if (operation != null || fadingOut || shuttingDown) return;
             var edited = ChatJson.Read<ChatConfiguration>(ChatJson.Write(config));
             using (var dialog = new Form { Text = "Capri / Dialogue and privacy settings", Size = new Size(500, 580), StartPosition = FormStartPosition.CenterParent, BackColor = BackColor, ForeColor = ForeColor })
             {

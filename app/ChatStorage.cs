@@ -15,7 +15,8 @@ namespace CapriDesktop.Services
         [DataMember, Category("Privacy")] public int HistoryMessages { get; set; }
         [DataMember, Category("Appearance")] public double Opacity { get; set; }
         [DataMember, Category("Appearance")] public float FontSize { get; set; }
-        public ChatConfiguration()
+        public ChatConfiguration() { Defaults(new StreamingContext()); }
+        [OnDeserializing] private void Defaults(StreamingContext context)
         {
             GreetingEnglish = "Your pixels look comfortable today.|Ready for a little desktop mischief?";
             GreetingRussian = "Твои пиксели сегодня уютные.|Готов к небольшим настольным приключениям?";
@@ -28,7 +29,7 @@ namespace CapriDesktop.Services
             if (HistoryMessages < 2 || HistoryMessages > 200 || double.IsNaN(Opacity) || Opacity < .5 || Opacity > 1 || float.IsNaN(FontSize) || FontSize < 8 || FontSize > 24)
                 throw new ArgumentException("Use history 2–200, opacity 0.5–1 and font 8–24.");
             foreach (string value in new[] { GreetingEnglish, GreetingRussian, FallbackEnglish, FallbackRussian })
-                if (string.IsNullOrWhiteSpace(value) || value.Length > 2000) throw new ArgumentException("Dialogue responses must contain 1–2000 characters; separate alternatives with |.");
+                if (string.IsNullOrWhiteSpace(value) || value.Trim(' ', '|', '\t', '\r', '\n').Length == 0 || value.Length > 2000) throw new ArgumentException("Dialogue responses must contain 1–2000 characters; separate alternatives with |.");
         }
     }
     [DataContract] public sealed class ConversationSession
@@ -63,9 +64,11 @@ namespace CapriDesktop.Services
         {
             var sessions = Read("conversations.json", new List<ConversationSession>());
             if (sessions == null || sessions.Count > 20) throw new InvalidDataException("Invalid conversation archive.");
+            var ids = new HashSet<string>();
             foreach (var session in sessions)
             {
-                if (session == null || session.Messages == null || session.Messages.Count > 200) throw new InvalidDataException("Invalid conversation session.");
+                Guid id;
+                if (session == null || !Guid.TryParseExact(session.Id, "N", out id) || !ids.Add(session.Id) || string.IsNullOrWhiteSpace(session.Title) || session.Title.Length > 200 || session.Messages == null || session.Messages.Count > 200) throw new InvalidDataException("Invalid conversation session.");
                 foreach (var message in session.Messages) if (message == null || (message.Role != "user" && message.Role != "assistant") || message.Content == null || message.Content.Length > 100000) throw new InvalidDataException("Invalid stored message.");
             }
             return sessions;
@@ -73,6 +76,9 @@ namespace CapriDesktop.Services
         public void SaveSessions(List<ConversationSession> sessions, ChatConfiguration config, bool privateSession)
         {
             if (privateSession || !config.PersistHistory) return;
+            config.Validate();
+            // Do not silently overwrite a damaged archive; explicit deletion is the recovery action.
+            if (File.Exists(Path.Combine(root, "conversations.json"))) LoadSessions();
             while (sessions.Count > 20) sessions.RemoveAt(0);
             foreach (var session in sessions) while (session.Messages.Count > config.HistoryMessages) session.Messages.RemoveAt(0);
             Write("conversations.json", sessions);

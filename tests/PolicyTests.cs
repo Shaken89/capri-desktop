@@ -2,9 +2,11 @@ using System;
 using CapriDesktop;
 class PolicyTests
 {
-    static void Main()
+    static void Main(string[] args)
     {
+        if (args.Length > 0) { PackageChecks.Run(args); return; }
         ChatTests.Run();
+        StabilityTests.Run();
         if (AnimationPolicy.Complete(AnimationState.Grin, 31, 16) || !AnimationPolicy.Complete(AnimationState.Grin, 32, 16)) throw new Exception("Grin duration");
         if (AnimationPolicy.Complete(AnimationState.Sleep, 100, 16)) throw new Exception("Sleep must loop");
         if (!AnimationPolicy.Seated(AnimationState.PerchGlitch)) throw new Exception("Perch transition");
