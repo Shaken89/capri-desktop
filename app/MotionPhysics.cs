@@ -20,6 +20,17 @@ namespace CapriDesktop
             velocity = target + (velocity - target) * decay;
             return distance;
         }
+        internal static bool PlanJump(double dx, double dy, double upwardSpeed, double gravity, double maxHorizontalSpeed, out double horizontalSpeed)
+        {
+            horizontalSpeed = 0;
+            if (gravity <= 0 || upwardSpeed <= 0 || maxHorizontalSpeed <= 0) return false;
+            double discriminant = upwardSpeed * upwardSpeed + 2 * gravity * dy;
+            if (discriminant < 0) return false;
+            double time = (upwardSpeed + Math.Sqrt(discriminant)) / gravity;
+            if (time <= 0 || time > 2) return false;
+            horizontalSpeed = dx / time;
+            return Math.Abs(horizontalSpeed) <= maxHorizontalSpeed;
+        }
         internal static bool Crosses(double before, double after, double surface)
         { return after >= before && before <= surface && after >= surface; }
         internal static bool Covers(int left, int top, int right, int bottom, int screenLeft, int screenTop, int screenRight, int screenBottom)

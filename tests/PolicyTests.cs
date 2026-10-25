@@ -4,6 +4,7 @@ class PolicyTests
 {
     static void Main()
     {
+        ChatTests.Run();
         if (AnimationPolicy.Complete(AnimationState.Grin, 31, 16) || !AnimationPolicy.Complete(AnimationState.Grin, 32, 16)) throw new Exception("Grin duration");
         if (AnimationPolicy.Complete(AnimationState.Sleep, 100, 16)) throw new Exception("Sleep must loop");
         if (!AnimationPolicy.Seated(AnimationState.PerchGlitch)) throw new Exception("Perch transition");
@@ -18,6 +19,9 @@ class PolicyTests
         double jumpVelocity = -100, jumpHeight = 0;
         for (int i = 0; i < 20; i++) jumpHeight += MotionPhysics.Fall(ref jumpVelocity, 100, .1);
         if (Math.Abs(jumpHeight) > 1e-8 || jumpVelocity <= 0) throw new Exception("Ballistic hop return");
+        double horizontal;
+        if (!MotionPhysics.PlanJump(60, 0, 100, 200, 100, out horizontal) || Math.Abs(horizontal - 60) > 1e-8) throw new Exception("Reachable jump plan");
+        if (MotionPhysics.PlanJump(500, 0, 100, 200, 100, out horizontal) || MotionPhysics.PlanJump(20, -100, 100, 200, 100, out horizontal)) throw new Exception("Unreachable jump rejected");
         double slow = 0, fast = 0, a = 0, b = 0;
         for (int i = 0; i < 10; i++) slow += MotionPhysics.Walk(ref a, 50, .1);
         for (int i = 0; i < 100; i++) fast += MotionPhysics.Walk(ref b, 50, .01);
@@ -33,6 +37,6 @@ class PolicyTests
         if (behavior.Step(23, .1, 50) != 0) throw new Exception("User interruption");
         var gate = new CapriDesktop.Services.DesktopPermissionGate(null);
         if (gate.RequestAsync(CapriDesktop.Services.DesktopCapability.CaptureScreen, "test", System.Threading.CancellationToken.None).GetAwaiter().GetResult()) throw new Exception("Permission must fail closed");
-        Console.WriteLine("PASS 14 groups: ballistic hop, animation duration, looping, perch, easing, gravity, FPS independence, walking, collision, fullscreen geometry, cooldown, direction, interruption, permissions");
+        Console.WriteLine("PASS 16 groups: jump planning and unreachable targets, ballistic hop, animation duration, looping, perch, easing, gravity, FPS independence, walking, collision, fullscreen geometry, cooldown, direction, interruption, permissions");
     }
 }

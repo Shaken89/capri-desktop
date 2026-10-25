@@ -41,8 +41,7 @@ sleep, dragging, cursor riding and menus interrupt exploration. There is a
 20-second cooldown after interruption. Movement reverses at an edge and respects
 screen bounds. No new sprite artwork or walk cycle is claimed.
 
-Hop on this edge initiates a gravity-based hop on the current support. This is a
-vertical hop, not window-to-window pathfinding. Existing drop/landing logic is
+Hop on this edge initiates a gravity-based hop on the current support. The lightweight update adds a ballistic jump to a reachable nearby window on the same monitor, falling back to a vertical hop. Existing drop/landing logic is
 retained. A disappearing/minimized support now initiates falling, and moving
 landing targets are revalidated. Fractional motion is retained between frames,
 avoiding integer rounding bias. Cursor riding now uses elapsed-time easing.
@@ -76,7 +75,7 @@ Linux: core tests execute animation timing, exponential easing, exact gravity at
 different frame rates, ballistic hop, acceleration, collision direction,
 negative-monitor fullscreen geometry, cooldowns, interruption and default-denied
 permissions. The actual application cross-compiles against net48 references.
-Compiler emits 38 CS0649 warnings for existing deserialization DTO fields.
+Deserialization DTOs now use properties and compile without CS0649 warnings.
 Compilation is not proof of Windows runtime compatibility.
 
 Windows still required: original smoke suite; move/resize/minimize/close support
@@ -86,7 +85,7 @@ round trips; existing voice/chat behavior; CPU/memory measurements at each FPS.
 No original installer or downloaded Capri binary is executed.
 
 This is an incremental Milestone A implementation, not complete Enhanced 2.0.
-Remaining A work includes jumps between windows, event-driven window caches,
+Remaining A work includes broader jump planning, event-driven window caches,
 direction-aware artwork, transition blending and a complete hierarchical state
 machine. Complete Windows acceptance before building later milestones on top.
 
@@ -101,3 +100,60 @@ looping and completion. Reuse a documented existing animation when artwork is ab
 No repository-wide license was found. Font assets include an OFL notice; this does
 not grant redistribution rights to application source or Capri artwork. Preserve
 notices and obtain applicable permission before public distribution.
+
+
+## Lightweight chatbot update (8 GB laptop target)
+
+The latest requested direction replaces the proposed Ollama milestone with a
+built-in rule engine. No Ollama client or AI HTTP provider was added. No model,
+Python, Docker, API key or GPU is needed. Original model/voice implementation files
+remain for compatibility, but automatic model discovery is removed and normal
+Mainframe model setup/refresh actions open built-in chat instead. Legacy voice
+controls remain explicitly user-operated; the new chat never activates them.
+
+Click Capri, use the typing pill, or right-click and select Open chat. The WinForms
+window offers message bubbles, Enter to send (Shift+Enter for newline), a brief
+cancellable typewriter effect, bounded smooth scrolling, fade transitions, New,
+Clear, Delete all, a session selector, Private session and Settings. Timers stop
+when transitions end; there are no chat worker processes or idle inference tasks.
+
+Try `hello`, `how are you`, `help`, `sit`, `jump`, `sleep`, `wake up`, `follow cursor`,
+`stop following`; Russian equivalents include `привет`, `как дела`, `помощь`, `сядь`,
+`прыгни`, `спи`, `проснись`, `следуй за курсором`, `остановись`. Commands match complete
+normalized phrases; neither response templates nor unknown input execute commands.
+Unsupported questions receive an honest rule-engine fallback. Greetings account for
+local time; repetition, compliments and character activity have specific responses.
+Settings allow English/Russian greeting and fallback variants separated by `|`.
+
+Architecture: IChatProvider / BuiltInDialogue in LocalChat.cs owns dialogue rules;
+ChatWindow owns native UI and cancellable typing; ChatStorage owns validated JSON,
+atomic replacement and retention. Companion validates typed command enums and
+performs the existing character actions on the WinForms UI thread. There is no
+network implementation behind the provider interface. AI integration is future work.
+
+History persistence defaults OFF. When enabled, JSON is stored next to existing
+Capri settings in the user's LocalApplicationData/Capri directory. It is local
+plaintext, not encrypted. Limit: 20 sessions, configurable 2–200 messages per
+session, and an 8 MiB file limit. Oldest entries are removed at the limit. Private
+sessions are never written. Turning persistence off retains previously saved data;
+Clear removes the current saved session and Delete all erases the archive. Settings
+are stored separately in chat-settings.json. No conversation content is logged.
+
+Nearby-window jumps use an analytical ballistic reachability check; moving target
+geometry is checked during the short flight and descending surface crossings decide
+landing. Unreachable targets are rejected. This is one-way ledge physics, not full
+body collision with every window. Newly opened obstacles during flight and rapid
+window changes still need Windows acceptance testing. No new walking/jumping artwork
+is claimed; existing perch/dangle/glitch sprites provide the fallbacks.
+
+Validation added: 22 dialogue/storage/settings checks and 16 physics/animation/
+permission test groups execute on Linux. The complete net48 application cross-builds
+with zero warnings and errors. The Windows workflow remains unchanged and has not
+been run remotely. UI fades, cancellation during close, saved-session restoration,
+command execution, actual jumps/landings, DPI and fullscreen behavior need Windows
+runtime testing. Low CPU/RAM is a design goal, not a measured claim: profile idle,
+chat, window exploration and 15/30/60 FPS on the intended 8 GB Intel laptop.
+
+Build with `./scripts/build.ps1`; run `out/Capri.exe` on Windows. No downloaded
+original executable is used. Public redistribution remains blocked pending code
+and artwork rights clarification.
