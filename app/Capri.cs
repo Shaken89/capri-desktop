@@ -2240,14 +2240,19 @@ namespace CapriDesktop
                             UpdatePill(clock.Elapsed.TotalSeconds);
                             if (!pill.Visible || pill.Top < Bottom - 60 || Math.Abs(pill.Left + pill.Width / 2 - (Left + Width / 2)) > Width / 2) throw new Exception("Talk pill is not under her.");
                             pill.Press(1);
-                            if (!typer.Visible || typer.Bottom > Top + PaddingSize) throw new Exception("Pencil did not open the typing box above her.");
+                            if (textChat == null || !textChat.Visible || textChat.IsDisposed) throw new Exception("Pencil did not open the built-in chat window.");
+                            textChat.Shutdown();
+                            checks.Add("PASS pencil opens the native built-in chat window and it shuts down cleanly");
+                            // Keep coverage of the original speech UI through its own entry point.
+                            OpenTyper();
+                            if (!typer.Visible || typer.Bottom > Top + PaddingSize) throw new Exception("Legacy speech input did not open above her.");
                             typer.Send("hi");
                             if (!typer.Visible) throw new Exception("Sending closed the typing box.");
                             if (typer.Draft.Length > 0 || talkState != TalkState.Thinking || heard != "hi") throw new Exception("Sending did not start thinking: " + talkState + " draft '" + typer.Draft + "'");
                             RenderFrame();
                             if (!box.Visible || box.State != TalkState.Thinking) throw new Exception("Speech box did not open on THINKING.");
                             typer.Hide();
-                            checks.Add("PASS pill under her, pencil opens the typing box above her head, Enter sends, THINKING shows and the typing box stays open");
+                            checks.Add("PASS legacy speech input opens above her head, Enter sends, THINKING shows and the typing box stays open");
                             backdrop = new Form();
                             backdrop.Text = "Capri clean test desktop";
                             backdrop.FormBorderStyle = FormBorderStyle.None;
@@ -2317,7 +2322,7 @@ namespace CapriDesktop
                             RenderFrame();
                             box.Opened = clock.Elapsed.TotalSeconds - 1;
                             RenderFrame();
-                            pill.Press(1);
+                            OpenTyper();
                             typer.Draft = "nice, what are you up to?";
                             typer.Refresh();
                             if (!typer.Visible || !box.Visible || typer.Bottom > box.PanelOnScreen.Top || typer.Left != box.PanelOnScreen.Left) throw new Exception("Typing box did not sit above her message.");
