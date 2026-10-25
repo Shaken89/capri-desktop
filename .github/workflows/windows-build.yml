@@ -22,7 +22,18 @@ jobs:
           global-json-file: global.json
       - name: Build, portable tests, Windows regressions and native smoke suite
         shell: pwsh
-        run: ./scripts/build.ps1
+        run: |
+          try { ./scripts/build.ps1 }
+          catch {
+            $details = ($_ | Out-String)
+            Get-ChildItem out/*.stderr.log -ErrorAction SilentlyContinue | ForEach-Object {
+              $details += "`n" + $_.Name + "`n" + (Get-Content $_.FullName -Raw)
+            }
+            if ($details.Length -gt 12000) { $details = $details.Substring(0, 12000) }
+            $encoded = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows validation failed::$encoded"
+            exit 1
+          }
       - name: Upload test logs (no release publication)
         if: always()
         uses: actions/upload-artifact@v4
