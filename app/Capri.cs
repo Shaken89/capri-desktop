@@ -1971,11 +1971,11 @@ namespace CapriDesktop
                                 HoldSeat(gone);
                                 if (falling || seat == null) throw new Exception("A window blinking out for a moment knocked her off.");
                                 HoldSeat(gone + 0.4);
-                                if (falling || seat != null || anchor != sat || clip != glitch) throw new Exception("She did not stand up where she sat when the window went away.");
-                                clipStart -= 1;
-                                RenderFrame();
-                                if (clip != idle || anchor != sat) throw new Exception("Standing up did not settle into idle in place.");
-                                checks.Add("PASS dropped above a window she fell, sat on its top edge, rode along when it moved, ignored popups and windows passing over, and stood up where she sat when a window parked over her or it closed");
+                                if (!falling || seat != null || anchor != sat || clip != dangle) throw new Exception("Lost support did not start falling without teleporting.");
+                                int releasedY = Hip().Y;
+                                for (int i = 0; i < 240 && falling; i++) Tumble(fallStep + 0.033);
+                                if (falling || seat == null || seat.Window == shelf.Handle || Hip().Y < releasedY) throw new Exception("Lost support did not land on another valid surface below.");
+                                checks.Add("PASS dropped above a window she fell, sat on its top edge, followed movement, ignored transient occlusion, and fell/landed after support disappeared");
                             }
                             checks.Add("PASS ledge covering math; desktop icons read: " + Ledges.Icons().Count);
                             seat = null;
