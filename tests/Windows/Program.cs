@@ -23,10 +23,25 @@ internal static class Program
     }
     [STAThread] private static int Main()
     {
+        Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+        int result = 1;
+        // Keep a real WinForms message loop alive while individual tested windows close.
+        // DoEvents alone can uninstall the synchronization context between test cases.
+        using (var host = new Form { ShowInTaskbar = false, WindowState = FormWindowState.Minimized, Text = "Capri regression host" })
+        {
+            host.Shown += delegate
+            {
+                host.BeginInvoke((Action)delegate { try { result = RunChecks(); } finally { host.Close(); } });
+            };
+            Application.Run(host);
+        }
+        return result;
+    }
+    private static int RunChecks()
+    {
         string root = Path.Combine(Path.GetTempPath(), "capri-windows-tests-" + Guid.NewGuid().ToString("N"));
         try
         {
-            Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             AssetCatalog.Validate(typeof(Companion).Assembly); Check(true, "Embedded assets present");
             for (int i = 0; i < AssetCatalog.Sprites.Length; i++)
             {
