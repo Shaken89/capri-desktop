@@ -7,6 +7,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and test animation policies
-        shell: powershell
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build application and run core tests
+        shell: pwsh
         run: ./scripts/build.ps1
+      # Distribution rights for the original artwork are not established.
+      # Artifact upload is deliberately unavailable on public repositories.
+      - uses: actions/upload-artifact@v4
+        if: github.event.repository.private == true
+        with:
+          name: capri-development
+          path: out/
+          retention-days: 7
