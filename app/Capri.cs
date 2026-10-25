@@ -58,6 +58,8 @@ namespace CapriDesktop
         [DataMember] public bool HasPosition;
         [DataMember] public int Size = 240;
         [DataMember] public bool Motion = true;
+        [DataMember] public bool CursorReactions;
+        [DataMember] public bool SmoothMotion;
         [DataMember] public bool OnTop = true;
         [DataMember] public long UpdateCheckedAt;
         [DataMember] public string Model;
@@ -82,12 +84,14 @@ namespace CapriDesktop
     internal sealed class Clip
     {
         internal readonly Bitmap Strip;
+        internal readonly AnimationState State;
         internal readonly int Count;
         internal readonly double Fps;
         internal readonly float Height;
 
         internal Clip(string name, int count, double fps, float height)
         {
+            State = name.StartsWith("perch_blink") ? AnimationState.PerchBlink : name == "perch_glitch" ? AnimationState.PerchGlitch : name.StartsWith("blink") ? AnimationState.Blink : (AnimationState)Enum.Parse(typeof(AnimationState), name, true);
             Count = count;
             Fps = fps;
             Height = height;
@@ -133,6 +137,7 @@ namespace CapriDesktop
         private bool hidden;
         private Clip clip;
         private double clipStart;
+        private double reactionAngle, renderedAt;
         private int idleCycle;
         private Clip blinkWith;
         private IntPtr lastForeground;
@@ -252,6 +257,12 @@ namespace CapriDesktop
             motionItem = new ToolStripMenuItem("Idle motion", null, delegate { ToggleMotion(); });
             motionItem.Checked = preferences.Motion;
             menu.Items.Add(motionItem);
+            ToolStripMenuItem reactions = new ToolStripMenuItem("React to nearby cursor") { CheckOnClick = true, Checked = preferences.CursorReactions };
+            reactions.CheckedChanged += delegate { preferences.CursorReactions = reactions.Checked; SavePreferences(); };
+            menu.Items.Add(reactions);
+            ToolStripMenuItem smooth = new ToolStripMenuItem("Smooth motion (60 FPS)") { CheckOnClick = true, Checked = preferences.SmoothMotion };
+            smooth.CheckedChanged += delegate { preferences.SmoothMotion = smooth.Checked; frames.Interval = smooth.Checked ? 16 : 33; SavePreferences(); };
+            menu.Items.Add(smooth);
             topItem = new ToolStripMenuItem("Always on top", null, delegate { ToggleOnTop(); });
             topItem.Checked = preferences.OnTop;
             menu.Items.Add(topItem);
@@ -293,7 +304,7 @@ namespace CapriDesktop
             typer.Submitted += Hear;
             typer.VisibleChanged += delegate { if (!typer.Visible && replyDone >= 0) replyDone = clock.Elapsed.TotalSeconds; };
             frames = new System.Windows.Forms.Timer();
-            frames.Interval = 33;
+            frames.Interval = preferences.SmoothMotion ? 16 : 33;
             frames.Tick += delegate { if (riding) FollowCursor(); else if (falling) Tumble(clock.Elapsed.TotalSeconds); else if (seat != null) HoldSeat(clock.Elapsed.TotalSeconds); RenderFrame(); if (!riding && !dragging && !preferences.Motion && clip == idle && speech == null && talkState == TalkState.Off) frames.Stop(); };
             signals = new System.Windows.Forms.Timer();
             signals.Interval = 250;
@@ -309,7 +320,7 @@ namespace CapriDesktop
             };
             signals.Start();
             Size = CanvasSize(preferences.Size);
-            Rectangle work = Screen.PrimaryScreen.WorkingArea;
+            Rectangle work = Screen.FromPoint(Cursor.Position).WorkingArea;
             anchor = preferences.HasPosition ? new Point(preferences.X, preferences.Y) : new Point(work.Right - Width - 28, work.Bottom - Height - 12);
             anchor = KeepOnScreen(anchor);
             Location = anchor;
@@ -378,13 +389,12 @@ namespace CapriDesktop
 
         private int Advance(double now)
         {
-            bool seated = clip == perch || clip == perchGlitch;
+            bool seated = AnimationPolicy.Seated(clip.State);
             bool perched = riding || seat != null;
             if (perched && !seated) Play(perch);
             if ((!perched && seated) || (clip == dangle && !dragging && !falling)) Play(idle);
             int index = (int)((now - clipStart) * clip.Fps);
-            if ((clip == glitch && index >= glitch.Count) || (clip == wake && index >= wake.Count) || (clip == grin && index >= grin.Count * 2)) { Play(idle); index = 0; }
-            if (clip == perchGlitch && index >= perchGlitch.Count) { Play(perch); index = 0; }
+            if (AnimationPolicy.Complete(clip.State, index, clip.Count)) { Play(clip.State == AnimationState.PerchGlitch ? perch : idle); index = 0; }
             if (clip != idle && clip != perch) return index % clip.Count;
             if (!preferences.Motion) return 0;
             int cycle = index / clip.Count;
@@ -517,8 +527,8 @@ namespace CapriDesktop
 
         private void DisplaysChanged(object sender, EventArgs e)
         {
-            if (IsDisposed) return;
-            BeginInvoke((Action)delegate { if (seat != null) StandUp(); anchor = KeepOnScreen(anchor); Location = anchor; RenderFrame(); });
+            if (IsDisposed || !IsHandleCreated) return;
+            BeginInvoke((Action)delegate { if (IsDisposed) return; if (seat != null) StandUp(); anchor = KeepOnScreen(anchor); Location = anchor; RenderFrame(); });
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -1436,12 +1446,22 @@ namespace CapriDesktop
             Clip shown = clip;
             if ((clip == idle || clip == perch) && blinkWith != null && cell >= BlinkFrom && cell < BlinkFrom + blinkWith.Count) { shown = blinkWith; cell -= BlinkFrom; }
             int talk = MouthCell(now, shown);
-            Bitmap next = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
-            using (Graphics graphics = Graphics.FromImage(next)) Draw(graphics, shown, cell, talk);
-            Native.DrawLayered(Handle, next, anchor);
-            Bitmap old = frame;
-            frame = next;
-            if (old != null) old.Dispose();
+            double target = 0;
+            if (preferences.CursorReactions && preferences.Motion && !dragging && !riding && !falling && clip == idle)
+            {
+                Point cursor = Cursor.Position;
+                double dx = cursor.X - (anchor.X + Width / 2), dy = cursor.Y - (anchor.Y + Height / 2);
+                if (dx * dx + dy * dy < 160000) target = Math.Max(-3, Math.Min(3, dx / 80));
+            }
+            reactionAngle = AnimationPolicy.Approach(reactionAngle, target, now - renderedAt);
+            renderedAt = now;
+            if (frame == null || frame.Width != Width || frame.Height != Height)
+            {
+                if (frame != null) frame.Dispose();
+                frame = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
+            }
+            using (Graphics graphics = Graphics.FromImage(frame)) { graphics.Clear(Color.Transparent); Draw(graphics, shown, cell, talk); }
+            Native.DrawLayered(Handle, frame, anchor);
             UpdateTalk(now);
             if (pill.Visible) UpdatePill(now);
         }
@@ -1491,7 +1511,7 @@ namespace CapriDesktop
             float breathe = settled ? (float)Math.Sin(now * 1.75) * 2.2f : 0;
             float tilt = settled ? (float)Math.Sin(now * 0.95) * 0.65f : 0;
             graphics.TranslateTransform(Width / 2f, Height / 2f + breathe);
-            graphics.RotateTransform(tilt + (float)leanAngle);
+            graphics.RotateTransform(tilt + (float)(leanAngle + reactionAngle));
             int width = shown.Strip.Width / shown.Count;
             float tall = preferences.Size * shown.Height;
             float wide = tall * width / shown.Strip.Height;
