@@ -2,6 +2,7 @@ name: Windows development build
 on:
   push:
     branches: [feature/capri-enhanced]
+    tags: ['v*-dev.*']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -34,7 +35,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Upload development ZIP for laptop testing
-        if: success() && github.ref == 'refs/heads/feature/capri-enhanced' && github.event_name != 'pull_request'
+        if: success() && (github.ref == 'refs/heads/feature/capri-enhanced' || startsWith(github.ref, 'refs/tags/v')) && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: capri-windows-dev-${{ github.sha }}
@@ -43,3 +44,28 @@ jobs:
             out/artifacts/*.sha256
           if-no-files-found: error
           retention-days: 7
+
+  prerelease:
+    needs: build
+    if: github.repository == 'Shaken89/capri-desktop' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: capri-windows-dev-${{ github.sha }}
+          path: package
+      - name: Publish explicitly requested development prerelease after Windows checks
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = @(Get-ChildItem package -File | Where-Object { $_.Name -like '*.zip' -or $_.Name -like '*.sha256' } | ForEach-Object FullName)
+          if ($assets.Count -ne 2) { throw 'Expected exactly one tested ZIP and its SHA-256 checksum' }
+          gh release create $env:GITHUB_REF_NAME @assets --verify-tag --prerelease --latest=false --title "Capri Enhanced $env:GITHUB_REF_NAME" --notes-file docs/RELEASE-NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub prerelease publication failed' }
